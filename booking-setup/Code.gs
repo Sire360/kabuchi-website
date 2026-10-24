@@ -5,8 +5,9 @@
  *  1. Saves every booking as a new row in your Google Sheet
  *  2. Tells the website which times are already full
  *  3. Emails the customer a branded confirmation
- *  4. Emails Kabuchi about each new booking, with a one-tap link to
- *     WhatsApp the customer a confirmation
+ *  4. Sends the customer an automatic WhatsApp confirmation
+ *     (once WhatsApp Cloud API is connected — see README Part 3)
+ *  5. Emails Kabuchi about each new booking
  *
  * Setup steps are in README.md ("Set up online bookings").
  * Only change the values in SETTINGS below.
@@ -15,20 +16,29 @@
 var SETTINGS = {
   BUSINESS_NAME: 'Kabuchi Spa & Beauty',
   NOTIFY_EMAIL: 'kapolyogiven@gmail.com',     // where new-booking alerts go (change to the spa's email)
-  WHATSAPP: '260973879988',                  // Kabuchi WhatsApp number
+  WHATSAPP: '260973879988',                  // Kabuchi WhatsApp bookings number
   PHONE: '+260 973 879 988',
   ADDRESS: '13 Mwapona Road, Woodlands, Lusaka, Zambia',
-  WEBSITE: 'https://YOUR-USERNAME.github.io/kabuchi-website/',  // change after you publish
-  LOGO_URL: 'https://YOUR-USERNAME.github.io/kabuchi-website/images/logo.png',
+  WEBSITE: 'https://sire360.github.io/kabuchi-website/',  // change after you publish
+  LOGO_URL: 'https://sire360.github.io/kabuchi-website/images/logo.png',
   CLIENTS_PER_SLOT: 2,      // how many clients can be booked at the same time
   FIRST_SLOT: 9,            // 09:00
   LAST_SLOT: 17,            // 17:00 (closing 18:00)
   TIMEZONE: 'Africa/Lusaka',
-  SHEET_NAME: 'Bookings'
+  SHEET_NAME: 'Bookings',
+
+  // ---- Automatic WhatsApp confirmations (WhatsApp Cloud API by Meta) ----
+  // The secret token and phone number ID are NOT written here. Add them in
+  // Apps Script > Project Settings > Script properties as:
+  //   WA_TOKEN            (permanent access token)
+  //   WA_PHONE_NUMBER_ID  (from Meta: WhatsApp > API Setup)
+  WA_TEMPLATE: 'booking_confirmation',   // name of your approved message template
+  WA_LANGUAGE: 'en',                     // template language code (English = en)
+  GRAPH_VERSION: 'v23.0'                 // Meta API version
 };
 
 var HEADERS = ['Received', 'Reference', 'Status', 'Service', 'Treatment', 'Date', 'Time',
-               'Name', 'Phone', 'Email', 'WhatsApp confirm', 'Notes', 'WhatsApp link'];
+               'Name', 'Phone', 'Email', 'WhatsApp confirm', 'Notes', 'WhatsApp link', 'WhatsApp status'];
 
 /* Run this once from the editor (select "setup" and press Run) */
 function setup() {
@@ -92,20 +102,29 @@ function doPost(e) {
     lock.waitLock(20000);
     var counts = countBookings_(d.date, addDays_(d.date, 1));
     if ((counts[d.date + ' ' + d.time] || 0) >= SETTINGS.CLIENTS_PER_SLOT) {
+      lock.releaseLock();
       return json_({ ok: false, error: 'taken' });
     }
     var ref = makeRef_();
     var waLink = 'https://wa.me/' + d.phone + '?text=' + encodeURIComponent(customerWhatsAppText_(d, ref));
-    getSheet_().appendRow([
+    var sh = getSheet_();
+    sh.appendRow([
       new Date(), ref, 'Confirmed', d.service, d.option || '', d.date, d.time,
-      d.name, '+' + d.phone, d.email || '', d.whatsapp ? 'Yes' : 'No', d.notes || '', waLink
+      d.name, '+' + d.phone, d.email || '', d.whatsapp ? 'Yes' : 'No', d.notes || '', waLink, ''
     ]);
+    var rowNum = sh.getLastRow();
     SpreadsheetApp.flush();
     lock.releaseLock();
 
-    if (d.email) sendCustomerEmail_(d, ref);
-    sendOwnerEmail_(d, ref, waLink);
-    return json_({ ok: true, ref: ref });
+    // 1) WhatsApp confirmation to the customer (automatic, if connected)
+    var wa = d.whatsapp ? sendWhatsApp_(d, ref) : { status: 'not requested' };
+    try { sh.getRange(rowNum, HEADERS.length).setValue(wa.status + (wa.detail ? ': ' + wa.detail : '')); } catch (x) {}
+    // 2) Email confirmation to the customer
+    var emailed = false;
+    if (d.email) { try { sendCustomerEmail_(d, ref); emailed = true; } catch (x) {} }
+    // 3) Alert to Kabuchi
+    try { sendOwnerEmail_(d, ref, waLink, wa); } catch (x) {}
+    return json_({ ok: true, ref: ref, whatsapp: wa.status, email: emailed });
   } catch (err) {
     try { lock.releaseLock(); } catch (x) {}
     return json_({ ok: false, error: 'server' });
@@ -210,7 +229,8 @@ function sendCustomerEmail_(d, ref) {
   });
 }
 
-function sendOwnerEmail_(d, ref, waLink) {
+function sendOwnerEmail_(d, ref, waLink, wa) {
+  wa = wa || { status: 'not requested' };
   var html =
     '<div style="font-family:Arial,Helvetica,sans-serif;max-width:560px">' +
     '<h2 style="color:#5E2E1C;font-family:Georgia,serif">New booking ' + ref + '</h2>' +
@@ -218,7 +238,7 @@ function sendOwnerEmail_(d, ref, waLink) {
     row_('Service', esc_(serviceText_(d))) + row_('Date', niceDate_(d.date)) + row_('Time', d.time) +
     row_('Name', esc_(d.name)) + row_('Phone', '<a href="tel:+' + d.phone + '">+' + d.phone + '</a>') +
     row_('Email', esc_(d.email || '—')) + row_('Notes', esc_(d.notes || '—')) +
-    row_('WhatsApp', d.whatsapp ? '<b>Customer asked for a WhatsApp confirmation</b>' : 'Not requested') + '</table>' +
+    row_('WhatsApp', wa.status === 'sent' ? '✅ Confirmation sent automatically' : (d.whatsapp ? '<b>Not sent automatically (' + esc_(wa.status + (wa.detail ? ': ' + wa.detail : '')) + '). Use the green button below.</b>' : 'Not requested')) + '</table>' +
     '<p style="margin-top:22px"><a href="' + waLink + '" style="display:inline-block;background:#25D366;color:#fff;text-decoration:none;padding:13px 22px;border-radius:30px;font-weight:bold">Send WhatsApp confirmation to ' + esc_(d.name.split(' ')[0]) + '</a></p>' +
     '<p style="color:#888;font-size:12px">Tap the green button on your phone: WhatsApp opens with the confirmation already written, just press send. If WhatsApp says the number is not on WhatsApp, call or SMS them instead.<br>To cancel a booking, change its Status to "Cancelled" in the Google Sheet. The time becomes free again on the website.</p></div>';
   MailApp.sendEmail({
@@ -229,4 +249,56 @@ function sendOwnerEmail_(d, ref, waLink) {
     name: 'Kabuchi Website',
     replyTo: d.email || SETTINGS.NOTIFY_EMAIL
   });
+}
+
+
+/* ---------- Automatic WhatsApp (WhatsApp Cloud API) ---------- */
+/* Sends the approved template "booking_confirmation" with 5 values:
+   {{1}} first name  {{2}} reference  {{3}} service  {{4}} date  {{5}} time  */
+function sendWhatsApp_(d, ref) {
+  var props = PropertiesService.getScriptProperties();
+  var token = props.getProperty('WA_TOKEN');
+  var phoneId = props.getProperty('WA_PHONE_NUMBER_ID');
+  if (!token || !phoneId) return { status: 'not connected' };
+  var payload = {
+    messaging_product: 'whatsapp',
+    to: String(d.phone),
+    type: 'template',
+    template: {
+      name: SETTINGS.WA_TEMPLATE,
+      language: { code: SETTINGS.WA_LANGUAGE },
+      components: [{
+        type: 'body',
+        parameters: [
+          { type: 'text', text: d.name.split(' ')[0] },
+          { type: 'text', text: ref },
+          { type: 'text', text: serviceText_(d) },
+          { type: 'text', text: niceDate_(d.date) },
+          { type: 'text', text: d.time }
+        ]
+      }]
+    }
+  };
+  try {
+    var res = UrlFetchApp.fetch('https://graph.facebook.com/' + SETTINGS.GRAPH_VERSION + '/' + phoneId + '/messages', {
+      method: 'post',
+      contentType: 'application/json',
+      headers: { Authorization: 'Bearer ' + token },
+      payload: JSON.stringify(payload),
+      muteHttpExceptions: true
+    });
+    var body = JSON.parse(res.getContentText() || '{}');
+    if (res.getResponseCode() === 200 && body.messages && body.messages.length) return { status: 'sent' };
+    return { status: 'failed', detail: (body.error && (body.error.error_data && body.error.error_data.details || body.error.message)) || ('HTTP ' + res.getResponseCode()) };
+  } catch (err) {
+    return { status: 'failed', detail: String(err).slice(0, 120) };
+  }
+}
+
+/* Run this from the editor to send yourself a test WhatsApp.
+   Put your own number (e.g. 260971234567) below, then select testWhatsApp and press Run. */
+function testWhatsApp() {
+  var result = sendWhatsApp_({ name: 'Test Customer', phone: '260973879988', service: 'Massage', option: 'Back & Neck',
+                               date: today_(), time: '10:00' }, 'KB-TEST1');
+  Logger.log(JSON.stringify(result));
 }

@@ -187,7 +187,7 @@
     fetch(C.SCRIPT_URL, { method: 'POST', body: JSON.stringify(payload) })
       .then(function (r) { return r.json(); })
       .then(function (j) {
-        if (j.ok) { state.ref = j.ref; finish(true); return; }
+        if (j.ok) { state.ref = j.ref; state.waSent = j.whatsapp === 'sent'; state.emailed = j.email !== false; finish(true); return; }
         if (j.error === 'taken') {
           err.textContent = 'Sorry, someone has just booked ' + state.time + ' on that day. Please choose another time.';
           err.hidden = false; (state.full[state.date] = state.full[state.date] || []).push(state.time); state.time = '';
@@ -205,12 +205,18 @@
   function finish(sent) {
     var email = $('#bk-email').value.trim();
     $('#bk-done-title').textContent = sent ? 'You’re booked!' : 'Almost done!';
+    var first = esc($('#bk-name').value.trim().split(' ')[0]);
+    var phoneTxt = '+' + normPhone($('#bk-phone').value);
+    var sentTo = [];
+    if (sent && state.waSent) sentTo.push('your WhatsApp (<b>' + phoneTxt + '</b>)');
+    if (sent && email && state.emailed) sentTo.push('your email (<b>' + esc(email) + '</b>)');
     $('#bk-done-text').innerHTML = sent
-      ? 'Thank you, <b>' + esc($('#bk-name').value.trim().split(' ')[0]) + '</b>. Your booking reference is <b class="bk-ref">' + state.ref + '</b>.' +
-        (email ? '<br>A confirmation email has been sent to <b>' + esc(email) + '</b>. Please check your spam folder if you can’t see it.' : '')
+      ? 'Thank you, <b>' + first + '</b>. Your booking reference is <b class="bk-ref">' + state.ref + '</b>.' +
+        (sentTo.length ? '<br>A confirmation has been sent to ' + sentTo.join(' and ') + '.' : '') +
+        (email && state.emailed ? ' If you can’t see the email, check your spam folder.' : '')
       : 'WhatsApp has opened with your booking details. <b>Press send</b> and we will reply to confirm your appointment.';
     $('#bk-wa-btn').href = waLink();
-    $('#bk-wa-btn').querySelector('span').textContent = sent ? 'Get confirmation on WhatsApp' : 'Open WhatsApp again';
+    $('#bk-wa-btn').querySelector('span').textContent = !sent ? 'Open WhatsApp again' : (state.waSent ? 'Chat with us on WhatsApp' : 'Get confirmation on WhatsApp');
     var start = parse(state.date); start.setHours(+state.time.slice(0, 2), 0, 0, 0);
     var end = new Date(start.getTime() + 60 * 60000);
     var title = 'Kabuchi Spa & Beauty – ' + state.service;
@@ -228,7 +234,7 @@
   function esc(s) { return s.replace(/[&<>"]/g, function (c) { return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]; }); }
 
   $('#bk-again').addEventListener('click', function () {
-    state.time = ''; state.ref = ''; form.reset();
+    state.time = ''; state.ref = ''; state.waSent = false; state.emailed = false; form.reset();
     $$('.bk-svc').forEach(function (c) { c.classList.remove('sel'); });
     optBox.innerHTML = ''; state.service = ''; state.option = '';
     if (online) loadFull(ymd(new Date()));

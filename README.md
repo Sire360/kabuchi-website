@@ -46,7 +46,8 @@ When this is set up, the booking page will:
 - ✅ Save every booking in a Google Sheet
 - ✅ Hide times that are already full, so nobody double-books
 - ✅ Email the customer a branded confirmation
-- ✅ Email Kabuchi about each new booking, with a green **"Send WhatsApp confirmation"** button
+- ✅ Send the customer an automatic **WhatsApp** confirmation, once you complete Part 3
+- ✅ Email Kabuchi about each new booking
 
 ### Steps
 
@@ -56,7 +57,7 @@ When this is set up, the booking page will:
 4. At the top of the code, under `SETTINGS`, check these values:
    - `NOTIFY_EMAIL`: the email that should receive new-booking alerts
    - `CLIENTS_PER_SLOT`: how many clients you can serve at the same time (it starts at **2**)
-   - `WEBSITE` and `LOGO_URL`: replace `YOUR-USERNAME` with your GitHub username, so the logo shows in emails
+   - `WEBSITE` and `LOGO_URL` are already set to `sire360.github.io`. Change them only if you move to your own domain
 5. Click 💾 **Save**. In the function menu at the top, choose **setup** and click **Run**.
    Google will ask for permission. Click **Review permissions**, choose your account, then **Advanced → Go to project (unsafe) → Allow**. This is normal for your own scripts. A **Bookings** tab will appear in your sheet.
 6. Click **Deploy → New deployment**. Click the ⚙️ icon and choose **Web app**, then set:
@@ -75,18 +76,83 @@ When this is set up, the booking page will:
 - Every booking is a row in the **Bookings** tab.
 - **To cancel a booking:** change its **Status** to `Cancelled`. That time becomes free again on the website.
 - You can also mark bookings as `Completed` or `No-show`.
-- **WhatsApp confirmation:** on your phone, open the "New booking" email and tap the green button. WhatsApp opens a chat to the customer with the confirmation already written, so you just press send. The same link is also in the last column of the sheet. If WhatsApp says the number isn't on WhatsApp, call or SMS the customer instead.
+- **WhatsApp status:** the last column shows `sent`, `failed` (for example, the number isn't on WhatsApp), `not connected` (Part 3 isn't done yet) or `not requested`.
+- **When a WhatsApp wasn't sent automatically,** the "New booking" email has a green button. Tap it on your phone and WhatsApp opens a chat to the customer with the confirmation already written, so you just press send.
 
 ### Good to know
 
 - A free Gmail account can send about **100 emails a day**. That's plenty for a spa.
 - If you change `Code.gs` later, click **Deploy → Manage deployments → ✏️ Edit**, set **Version** to *New version*, and click **Deploy**. The URL stays the same.
 - Until `SCRIPT_URL` is filled in, the booking page still works: it sends each booking to Kabuchi on WhatsApp instead.
-- **Fully automatic WhatsApp messages** (sent without anyone pressing send) need the paid WhatsApp Business API, through Meta or a provider such as Twilio. This can be added later if bookings grow.
+- Customers can tick or untick "Send my confirmation to WhatsApp" on the booking form.
 
 ---
 
-## Part 3: A domain name (web address)
+## Part 3: Automatic WhatsApp confirmations (WhatsApp Cloud API)
+
+With this connected, customers receive a WhatsApp message like this a few seconds after booking:
+
+> Hello Mary, your appointment at Kabuchi Spa & Beauty is confirmed ✅
+> Ref: KB-7QX4M · Service: Massage – Back & Neck · Date: Sunday, 25 October 2026 at 12:00 …
+
+This uses **Meta's official WhatsApp Cloud API**. It's the only reliable, allowed way for a website to send WhatsApp messages automatically.
+
+### Before you start: costs and the phone number
+
+- **Cost:** Meta charges a small fee for each confirmation **delivered** (a "utility" message). Zambia uses Meta's **"Rest of Africa"** rate, which is usually a few US cents per message. You need to add a payment card in Meta Business. Check the current rate here: https://developers.facebook.com/docs/whatsapp/pricing
+- **Phone number:** the number that sends the automatic messages must be connected to the Cloud API. You have two choices:
+  1. **Simplest:** buy a **separate SIM** just for automatic confirmations. Keep **+260 973 879 988** on your phone as normal for chatting with clients.
+  2. **Use the same number (+260 973 879 988):** Meta's "coexistence" lets one number work in both the WhatsApp Business app and the API. The number must be on the **WhatsApp Business app** (not plain WhatsApp), and it's set up through Meta's Embedded Signup, usually with a provider (BSP) such as Twilio, Telnyx, 360dialog or Wati. If you register the number directly on the Cloud API without coexistence, it **stops working in the normal WhatsApp app**.
+
+### Steps
+
+1. **Create a Meta Business account** at **business.facebook.com**. Use the business name *Kabuchi Spa & Beauty*.
+2. **Create a Meta app.** Go to **developers.facebook.com → My Apps → Create app**, choose **Business**, and link it to your Kabuchi business account.
+3. In the app, click **Add product → WhatsApp → Set up**.
+4. **Add your phone number.** Go to **WhatsApp → API Setup → Add phone number**. Enter the display name *Kabuchi Spa & Beauty* and verify the number by SMS or call.
+   Copy the **Phone number ID** shown on that page.
+5. **Create the message template.** Go to **WhatsApp Manager → Message templates → Create template**.
+   - **Category:** Utility
+   - **Name:** `booking_confirmation`
+   - **Language:** English
+   - **Body:** copy this text exactly. The `{{1}}` to `{{5}}` placeholders are filled in automatically.
+     ```
+     Hello {{1}}, your appointment at Kabuchi Spa & Beauty is confirmed ✅
+
+     Ref: {{2}}
+     Service: {{3}}
+     Date: {{4}}
+     Time: {{5}}
+     Where: 13 Mwapona Road, Woodlands, Lusaka
+
+     Need to change it? Reply to this message or call +260 973 879 988. See you soon!
+     ```
+   - When Meta asks for sample values, enter: `Mary`, `KB-7QX4M`, `Massage`, `Sunday, 25 October 2026`, `12:00`.
+   - Submit it. Approval usually takes from a few minutes to a day.
+6. **Get a permanent access token.**
+   - Go to **business.facebook.com → Settings → Users → System users**. Click **Add**, choose the **Admin** role, then **Add assets**, select your app and give it **Full control**.
+   - Click **Generate new token**, choose your app, tick **whatsapp_business_messaging** and **whatsapp_business_management**, and set expiry to **Never**.
+   - **Copy the token** and keep it secret.
+7. **Add a payment method** in WhatsApp Manager under **Payment settings**.
+8. **Connect it to the booking script.**
+   - Open your Google Sheet, go to **Extensions → Apps Script**, then ⚙️ **Project Settings → Script properties → Add script property**.
+   - Add these two properties, then click **Save**:
+     - `WA_TOKEN`: your token from step 6
+     - `WA_PHONE_NUMBER_ID`: the Phone number ID from step 4
+9. **Test it.** In the Apps Script editor, open `Code.gs` and find `testWhatsApp`. Put your own number in it (for example `260971234567`), select **testWhatsApp** in the function menu and click **Run**. You should receive the WhatsApp message.
+10. **Redeploy.** Go to **Deploy → Manage deployments → ✏️ → Version: New version → Deploy**.
+
+From then on, each booking sends **both** an email and a WhatsApp confirmation. The sheet's **WhatsApp status** column shows whether each message was sent.
+
+### If a WhatsApp message fails
+
+- **"not connected":** `WA_TOKEN` or `WA_PHONE_NUMBER_ID` is missing from Script properties.
+- **Template errors:** the template name must be exactly `booking_confirmation` and the template must be **Approved**.
+- **"Message undeliverable":** the customer's number isn't on WhatsApp. They still receive the email, and Kabuchi's alert email includes a button to contact them.
+
+---
+
+## Part 4: A domain name (web address)
 
 **Free option:** GitHub gives you a free address like `kabuchispa.github.io`. It's secure (https) and costs nothing. This is the best place to start.
 
@@ -105,7 +171,7 @@ When this is set up, the booking page will:
 
 1. On GitHub, go to **Settings → Pages → Custom domain**. Type your domain (for example `www.kabuchispa.com`) and click **Save**.
 2. At the company where you bought the domain, add these DNS records:
-   - `CNAME` record: name `www`, value `YOUR-USERNAME.github.io`
+   - `CNAME` record: name `www`, value `sire360.github.io`
    - Four `A` records for the main domain (`@`): `185.199.108.153`, `185.199.109.153`, `185.199.110.153`, `185.199.111.153`
 3. Wait up to 24 hours, then tick **Enforce HTTPS** in GitHub Pages.
 4. In `booking-setup/Code.gs`, update `WEBSITE` and `LOGO_URL` to the new address, and redeploy as described above.
